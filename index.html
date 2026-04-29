@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WebHID BLE 滑鼠測試工具 (Pro 版)</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            max-width: 650px;
+            margin: 40px auto;
+            padding: 20px;
+            background-color: #f0f2f5;
+        }
+        .card {
+            background: white;
+            padding: 25px;
+            border-radius: 10px;
+            box-shadow: 0 8px 15px rgba(0,0,0,0.1);
+        }
+        h2 { margin-top: 0; color: #2c3e50; border-bottom: 2px solid #3498db; padding-bottom: 10px;}
+        
+        .control-group {
+            margin-bottom: 20px;
+            padding: 15px;
+            background-color: #e8f4f8;
+            border-radius: 8px;
+            border-left: 5px solid #3498db;
+        }
+        select {
+            padding: 8px;
+            font-size: 16px;
+            border-radius: 4px;
+            border: 1px solid #ccc;
+            width: 100%;
+            margin-top: 10px;
+        }
+        button {
+            padding: 10px 20px;
+            margin: 10px 5px 5px 0;
+            border: none;
+            border-radius: 5px;
+            font-size: 16px;
+            font-weight: bold;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        #connectBtn { background-color: #3498db; color: white; width: 100%; margin-top: 15px;}
+        #connectBtn:hover { background-color: #2980b9; transform: translateY(-2px);}
+        
+        .actionBtn { background-color: #27ae60; color: white; width: 48%;}
+        .actionBtn:hover { background-color: #219653; }
+        .actionBtn:disabled { background-color: #bdc3c7; cursor: not-allowed; transform: none;}
+        
+        #logArea {
+            background: #2c3e50;
+            color: #2ecc71;
+            padding: 15px;
+            height: 250px;
+            overflow-y: auto;
+            border-radius: 5px;
+            font-family: 'Consolas', monospace;
+            font-size: 14px;
+            line-height: 1.4;
+        }
+        .status { font-size: 1.1em; font-weight: bold; color: #7f8c8d; margin-bottom: 15px; text-align: center;}
+    </style>
+</head>
+<body>
+
+<div class="card">
+    <h2>⚡ HPAC WebHID 測試面板 (Pro)</h2>
+    
+    <div class="control-group">
+        <label for="deviceSelector"><b>🎯 第 1 步：選擇目標測試板型號</b></label>
+        <select id="deviceSelector">
+            <option value="0x9C4A">🖱️ HP 720/725 原廠 (PID: 0x9C4A)</option>
+            <option value="0x9999"> FAE 測試板 A (PID: 0x9999)</option>
+            <option value="0x9998"> FAE 測試板 B (PID: 0x9998)</option>
+            <option value="all"> 顯示全部裝置 (不過濾)</option>
+        </select>
+        
+        <button id="connectBtn">🔗 第 2 步：開啟連線視窗</button>
+    </div>
+
+    <div class="status" id="statusText">狀態：尚未連線</div>
+    
+    <div style="display: flex; justify-content: space-between;">
+        <button class="actionBtn" id="btnHigh" disabled onclick="sendToggleCommand(1)">🟢 P12 High (d[1]=1)</button>
+        <button class="actionBtn" id="btnLow" disabled style="background-color: #e74c3c;" onclick="sendToggleCommand(0)">🔴 P12 Low (d[1]=0)</button>
+    </div>
+
+
+    <div class="control-group" style="margin-top: 15px; background-color: #fdf2e9; border-left: 5px solid #e67e22;">
+        <label for="pwmSlider"><b>🔅 P11 PWM Duty 調整 (0-20)</b></label>
+        <div style="display: flex; align-items: center; margin-top: 10px;">
+            <input type="range" id="pwmSlider" min="0" max="20" value="0" disabled style="flex-grow: 1; margin-right: 15px;">
+            <span id="pwmValue" style="font-weight: bold; font-size: 18px; color: #e67e22; width: 40px;">0</span>
+        </div>
+    </div>
+
+
+    <h3 style="margin-top: 25px; color: #2c3e50;">系統 Log:</h3>
+    <div id="logArea"></div>
+</div>
+
+<script>
+    let myMouse = null;
+    const logArea = document.getElementById('logArea');
+    const statusText = document.getElementById('statusText');
+    const btnHigh = document.getElementById('btnHigh');
+    const btnLow = document.getElementById('btnLow');
+    const deviceSelector = document.getElementById('deviceSelector');
+
+    // 寫入 Log 並自動捲動到底部
+    function log(message) {
+        const time = new Date().toLocaleTimeString();
+        logArea.innerHTML += `[${time}] ${message}<br>`;
+        logArea.scrollTop = logArea.scrollHeight;
+    }
+
+    if (!("hid" in navigator)) {
+        log("❌ 你的瀏覽器不支援 WebHID API！");
+        document.getElementById('connectBtn').disabled = true;
+    }
+
+    // 連接按鈕邏輯
+    document.getElementById('connectBtn').addEventListener('click', async () => {
+        try {
+            const selectedValue = deviceSelector.value;
+            let filters = [];
+
+            // 根據選單設定過濾器
+            if (selectedValue !== "all") {
+                // 將字串 (如 "0x9999") 轉換為 16 進位整數
+                const pid = parseInt(selectedValue, 16);
+                filters = [{ vendorId: 0x03F0, productId: pid }];
+                log(`🔍 啟動過濾器 -> 尋找 VID: 0x03F0, PID: 0x${pid.toString(16).toUpperCase()}`);
+            } else {
+                log(`🌐 未啟用過濾器，顯示所有 HID 裝置`);
+            }
+
+            // 呼叫系統視窗，帶入動態設定的 filters
+            const devices = await navigator.hid.requestDevice({ filters: filters });
+            
+            if (devices.length === 0) {
+                log("⚠️ 使用者取消了選擇。");
+                return;
+            }
+
+            myMouse = devices[0];
+            await myMouse.open();
+            
+            // 抓取下拉選單的文字，當作顯示名稱
+            const selectedText = deviceSelector.options[deviceSelector.selectedIndex].text;
+            
+            statusText.innerHTML = `狀態：已連接至 <span style="color: #27ae60;">${selectedText}</span>`;
+            log(`✅ 成功連接硬體! PID: 0x${myMouse.productId.toString(16).toUpperCase()}`);
+            
+            // 解鎖 GPIO 控制按鈕
+            btnHigh.disabled = false;
+            btnLow.disabled = false;
+            pwmSlider.disabled = false
+
+            // 監聽回傳資料
+            myMouse.addEventListener("inputreport", (event) => {
+                if(event.reportId === 6) {
+                    const data = new Uint8Array(event.data.buffer);
+                    log(`📥 收到 0x06 封包: [${data.join(', ')}]`);
+                }
+            });
+
+        } catch (error) {
+            log(`❌ 連接發生錯誤: ${error.message}`);
+        }
+    });
+
+    // 發送 0x99 攔截指令
+    async function sendToggleCommand(state) {
+        if (!myMouse || !myMouse.opened) {
+            log("⚠️ 錯誤：裝置尚未連接。");
+            return;
+        }
+
+        try {
+            const payload = new Uint8Array(20);
+            payload[0] = 0x99; // 通關密語
+            payload[1] = state ? 0x01 : 0x00; // 控制參數
+
+            log(`📤 發送指令: d[0]=0x99, d[1]=0x0${state}...`);
+            await myMouse.sendReport(6, payload);
+            
+        } catch (error) {
+            log(`❌ 發送失敗: ${error.message}`);
+        }
+    }
+
+    const pwmSlider = document.getElementById('pwmSlider');
+    const pwmValue = document.getElementById('pwmValue');
+
+    // 當連線成功時，記得也要解鎖拉桿
+    // 在原本解鎖按鈕的地方加入：pwmSlider.disabled = false;
+
+    // 監聽拉桿拖動事件
+    pwmSlider.addEventListener('input', async (event) => {
+        const duty = parseInt(event.target.value);
+        pwmValue.innerText = `${duty}`;
+        await sendPwmCommand(duty);
+    });
+
+    // 發送 PWM 控制指令
+    async function sendPwmCommand(duty) {
+        if (!myMouse || !myMouse.opened) return;
+
+        try {
+            const payload = new Uint8Array(20);
+            payload[0] = 0x99; // 通關密語
+            payload[1] = 0x02; // 指令：0x02 代表 PWM 控制
+            payload[2] = duty; // 參數：Duty Cycle (0~100)
+
+            log(`📤 發送 PWM 指令: d[1]=0x02, Duty=${duty}%`);
+            await myMouse.sendReport(6, payload);
+        } catch (error) {
+            log(`❌ PWM 發送失敗: ${error.message}`);
+        }
+    }
+
+
+</script>
+
+</body>
+</html>
